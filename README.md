@@ -107,6 +107,341 @@ The API returns 25+ nutrients:
 }
 ```
 
+## Troubleshooting
+
+This section covers common integration issues and how to fix them. **If you're getting a 400 error with `"text": "Required"`**, read this carefully.
+
+---
+
+### ❌ Error: `"field":"text","message":"Required","code":"invalid_type"`
+
+**Symptom:** You receive this error response:
+```json
+{
+  "success": false,
+  "error": {
+    "code": 400,
+    "message": "Invalid request parameters",
+    "details": [{ "field": "text", "message": "Required", "code": "invalid_type" }]
+  }
+}
+```
+
+**Root Cause:** Your request body JSON is malformed. The API expects:
+```json
+{"text": "100g apple"}
+```
+
+But you're sending something like:
+```json
+{"{"text":"100g apple"}": true}
+```
+
+This happens when the JSON string is **double-encoded** or **incorrectly serialized**.
+
+---
+
+### 🔧 Fix by Integration Method
+
+#### 1. Java HttpClient (java.net.http) - Java 11+
+
+**❌ WRONG - Double encoding the JSON:**
+```java
+// DON'T DO THIS - Creates {"{"text":"100g apple"}": true}
+String jsonString = "{\"text\":\"100g apple\"}";
+Map<String, Boolean> body = Map.of(jsonString, true);  // WRONG!
+```
+
+**❌ WRONG - Using Map.toString():**
+```java
+// DON'T DO THIS - Creates {text=100g apple} (not valid JSON)
+Map<String, String> body = Map.of("text", "100g apple");
+String payload = body.toString();  // WRONG! This is NOT JSON
+```
+
+**✅ CORRECT - Build JSON string directly:**
+```java
+import java.net.URI;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
+
+public class CorrectExample {
+    public static void main(String[] args) throws Exception {
+        HttpClient client = HttpClient.newHttpClient();
+        
+        // ✅ CORRECT: Build the JSON payload as a properly formatted string
+        String foodQuery = "100g apple";
+        String payload = "{\"text\": \"" + foodQuery + "\"}";
+        
+        HttpRequest request = HttpRequest.newBuilder()
+            .uri(URI.create("https://nutrition-tracker-api.p.rapidapi.com/v1/calculate/natural"))
+            .header("Content-Type", "application/json")
+            .header("X-RapidAPI-Key", "YOUR_API_KEY")
+            .header("X-RapidAPI-Host", "nutrition-tracker-api.p.rapidapi.com")
+            .POST(HttpRequest.BodyPublishers.ofString(payload))
+            .build();
+        
+        HttpResponse<String> response = client.send(request, HttpResponse.BodyHandlers.ofString());
+        System.out.println(response.body());
+    }
+}
+```
+
+---
+
+#### 2. Spring RestTemplate
+
+**❌ WRONG - Passing a String that looks like JSON:**
+```java
+// DON'T DO THIS
+RestTemplate restTemplate = new RestTemplate();
+String jsonString = "{\"text\":\"100g apple\"}";
+Map<String, String> body = new HashMap<>();
+body.put(jsonString, "true");  // WRONG!
+```
+
+**✅ CORRECT - Use a proper request object or Map:**
+```java
+import org.springframework.http.*;
+import org.springframework.web.client.RestTemplate;
+import java.util.Map;
+import java.util.HashMap;
+
+public class SpringExample {
+    public static void main(String[] args) {
+        RestTemplate restTemplate = new RestTemplate();
+        
+        String url = "https://nutrition-tracker-api.p.rapidapi.com/v1/calculate/natural";
+        
+        // ✅ CORRECT: Create headers
+        HttpHeaders headers = new HttpHeaders();
+        headers.setContentType(MediaType.APPLICATION_JSON);
+        headers.set("X-RapidAPI-Key", "YOUR_API_KEY");
+        headers.set("X-RapidAPI-Host", "nutrition-tracker-api.p.rapidapi.com");
+        
+        // ✅ CORRECT: Create body as a Map (Spring auto-serializes to JSON)
+        Map<String, String> body = new HashMap<>();
+        body.put("text", "100g apple");  // Key is "text", value is the food query
+        
+        HttpEntity<Map<String, String>> entity = new HttpEntity<>(body, headers);
+        
+        ResponseEntity<String> response = restTemplate.exchange(
+            url, HttpMethod.POST, entity, String.class
+        );
+        
+        System.out.println(response.getBody());
+    }
+}
+```
+
+**✅ ALTERNATIVE - Use a POJO:**
+```java
+// Create a request class
+public class NutritionRequest {
+    private String text;
+    
+    public NutritionRequest(String text) {
+        this.text = text;
+    }
+    
+    public String getText() { return text; }
+    public void setText(String text) { this.text = text; }
+}
+
+// Use it in your API call
+NutritionRequest request = new NutritionRequest("100g apple");
+HttpEntity<NutritionRequest> entity = new HttpEntity<>(request, headers);
+```
+
+---
+
+#### 3. Spring WebClient (Reactive)
+
+**✅ CORRECT - Using WebClient:**
+```java
+import org.springframework.web.reactive.function.client.WebClient;
+import reactor.core.publisher.Mono;
+import java.util.Map;
+
+public class WebClientExample {
+    public static void main(String[] args) {
+        WebClient client = WebClient.builder()
+            .baseUrl("https://nutrition-tracker-api.p.rapidapi.com")
+            .defaultHeader("X-RapidAPI-Key", "YOUR_API_KEY")
+            .defaultHeader("X-RapidAPI-Host", "nutrition-tracker-api.p.rapidapi.com")
+            .build();
+        
+        // ✅ CORRECT: Create body as a Map
+        Map<String, String> body = Map.of("text", "100g apple");
+        
+        String response = client.post()
+            .uri("/v1/calculate/natural")
+            .contentType(MediaType.APPLICATION_JSON)
+            .bodyValue(body)  // WebClient auto-serializes the Map to JSON
+            .retrieve()
+            .bodyToMono(String.class)
+            .block();
+        
+        System.out.println(response);
+    }
+}
+```
+
+---
+
+#### 4. OkHttp
+
+**❌ WRONG - Incorrect MediaType or body:**
+```java
+// DON'T DO THIS
+String wrongBody = new JSONObject().put("{\"text\":\"100g apple\"}", true).toString();
+```
+
+**✅ CORRECT - Using OkHttp:**
+```java
+import okhttp3.*;
+
+public class OkHttpExample {
+    public static void main(String[] args) throws Exception {
+        OkHttpClient client = new OkHttpClient();
+        
+        // ✅ CORRECT: Build proper JSON body
+        String payload = "{\"text\": \"100g apple\"}";
+        
+        RequestBody body = RequestBody.create(
+            payload,
+            MediaType.parse("application/json")
+        );
+        
+        Request request = new Request.Builder()
+            .url("https://nutrition-tracker-api.p.rapidapi.com/v1/calculate/natural")
+            .addHeader("X-RapidAPI-Key", "YOUR_API_KEY")
+            .addHeader("X-RapidAPI-Host", "nutrition-tracker-api.p.rapidapi.com")
+            .post(body)
+            .build();
+        
+        try (Response response = client.newCall(request).execute()) {
+            System.out.println(response.body().string());
+        }
+    }
+}
+```
+
+---
+
+#### 5. Using Gson or Jackson for JSON Serialization
+
+If you prefer using a JSON library (recommended for complex scenarios):
+
+**✅ CORRECT - Using Gson:**
+```java
+import com.google.gson.Gson;
+import java.util.Map;
+
+public class GsonExample {
+    public static void main(String[] args) {
+        Gson gson = new Gson();
+        
+        // Create a simple Map
+        Map<String, String> requestBody = Map.of("text", "100g apple");
+        
+        // ✅ Gson correctly converts this to: {"text":"100g apple"}
+        String payload = gson.toJson(requestBody);
+        
+        System.out.println(payload);  // Output: {"text":"100g apple"}
+        
+        // Now use this payload in your HTTP request
+    }
+}
+```
+
+**✅ CORRECT - Using Jackson:**
+```java
+import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.Map;
+
+public class JacksonExample {
+    public static void main(String[] args) throws Exception {
+        ObjectMapper mapper = new ObjectMapper();
+        
+        // Create a simple Map
+        Map<String, String> requestBody = Map.of("text", "100g apple");
+        
+        // ✅ Jackson correctly converts this to: {"text":"100g apple"}
+        String payload = mapper.writeValueAsString(requestBody);
+        
+        System.out.println(payload);  // Output: {"text":"100g apple"}
+        
+        // Now use this payload in your HTTP request
+    }
+}
+```
+
+---
+
+### 🔍 How to Debug Your Request
+
+**Step 1: Print your payload before sending:**
+```java
+String payload = /* your JSON construction */;
+System.out.println("DEBUG - Sending payload: " + payload);
+// Should print: {"text": "100g apple"}
+// NOT: {"{"text":"100g apple"}": true}
+```
+
+**Step 2: Verify JSON structure:**
+Your payload MUST look exactly like this:
+```json
+{"text": "your food query here"}
+```
+
+**Step 3: Check for these common mistakes:**
+
+| Mistake | What You're Sending | Why It's Wrong |
+|---------|---------------------|----------------|
+| Double encoding | `{"{"text":"apple"}":true}` | JSON string used as a key |
+| Using Map.toString() | `{text=apple}` | Not valid JSON format |
+| Missing quotes | `{text: apple}` | JSON requires quoted strings |
+| Wrong Content-Type | N/A | Must be `application/json` |
+
+---
+
+### 📋 Checklist Before Making API Calls
+
+- [ ] **Content-Type header** is set to `application/json`
+- [ ] **X-RapidAPI-Key** header contains your valid API key
+- [ ] **X-RapidAPI-Host** header is set to `nutrition-tracker-api.p.rapidapi.com`
+- [ ] **Request body** is valid JSON: `{"text": "your food query"}`
+- [ ] **No double encoding** - the `text` key appears only once
+- [ ] **Using POST method** (not GET)
+
+---
+
+### 💡 Pro Tips
+
+1. **Use this SDK!** The `NutritionAPI.java` class in this repository handles all JSON serialization correctly. Just copy it to your project.
+
+2. **Test with curl first:**
+   ```bash
+   curl -X POST "https://nutrition-tracker-api.p.rapidapi.com/v1/calculate/natural" \
+     -H "Content-Type: application/json" \
+     -H "X-RapidAPI-Key: YOUR_API_KEY" \
+     -H "X-RapidAPI-Host: nutrition-tracker-api.p.rapidapi.com" \
+     -d '{"text": "100g apple"}'
+   ```
+
+3. **Use JSON libraries** like Gson or Jackson instead of manual string building for complex queries.
+
+4. **Escape special characters** in food queries (our SDK handles this automatically):
+   ```java
+   // If your query contains quotes or special chars
+   String query = "100g \"premium\" chicken";
+   // Must be escaped to: 100g \"premium\" chicken
+   ```
+
+---
+
 ## Pricing
 
 | Tier | Price | API Calls/Month | Items/Request |
